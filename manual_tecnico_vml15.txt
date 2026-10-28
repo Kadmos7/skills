@@ -1,0 +1,77 @@
+# MANUAL TÉCNICO DE INGENIERÍA: VML-15 "ODISEO"
+Versión Final - Documentación Oficial del Proyecto
+Clasificación: Deep-Tech / Ingeniería Avanzada Multimedio
+
+---
+
+## RESUMEN EJECUTIVO
+El Vehículo Multimedio Lenticular (VML-15) es una plataforma de exploración autónoma diseñada para operar de forma continua bajo entornos hostiles variables: la atmósfera, el espacio exterior, el océano abisal y el magma intraterrestre. Utiliza un chasis lenticular de 15 metros de diámetro con un sistema motriz y de soporte cimentado en un micro-reactor de fisión SMR de 20 MWe acoplado a un chasis magnético triangular superconductor.
+
+---
+
+## 1. GEOMETRÍA CENTRAL Y CONFIGURACIÓN MOTRIZ
+El núcleo estructural aloja un reactor modular SMR en su baricentro. Tres imanes superconductores de alta densidad de Niobio-Titanio (NbTi) se posicionan fijos en los vértices de una matriz triangular equilátera. Esta geometría está inscrita de forma concéntrica dentro de dos aros periféricos circulares mecánicos que giran en direcciones opuestas.
+
+### Dinámica de Contrarrotación
+Los aros externos operan mediante cojinetes de levitación magnética activa (Active Magnetic Bearings - AMB). Su rotación en sentidos contrarios cancela el momento angular neto del sistema (L_total = L_1 - L_2 = 0), eliminando los efectos destructivos de la precesión giroscópica durante maniobras bruscas. 
+* Modo Atmosférico: Los aros estabilizan la nave ante ráfagas de viento de alta cizalladura.
+* Modo Espacial: Permiten maniobras de actitud de energía casi nula en el vacío mediante transferencia inercial.
+* Modo Subterráneo/Magma: Actúan como un dinamo mecánico para transferir torque directo al medio denso, permitiendo al disco rotar sobre su propio eje.
+
+---
+
+## 2. ESPECIFICACIONES DE BLINDAJE Y ANÁLISIS DE VON MISES
+Para resistir las presiones extremas del océano profundo (110 MPa en la fosa de las Marianas) y la temperatura del magma (1,200 °C), el fuselaje lenticular implementa un espesor óptimo de 100 milímetros (10 cm) en matriz compuesto sándwich:
+
+1. Capa Exterior Sacrificial (3 mm): Carburo de Tantalio-Hafnio (Ta4HfC5). Soporta puntos de fusión de hasta 4,000 °C y resiste la abrasión del magma basáltico ácido.
+2. Núcleo Estructural (92 mm): Compuesto de Carbono-Carbono (C-C) reforzado tridimensionalmente con costillas de Titanio de Grado 5. Absorbe los vectores de presión hidrostática.
+3. Barrera Radiactiva Interna (5 mm): Capa de aerogel de grafeno dopada con Borofeno. Aíslan los 4.2 K del helio líquido del imán contra el calor externo y captura neutrones térmicos.
+
+### Tensor de Esfuerzo de Von Mises (Costillas de Titanio)
+El comportamiento de las vigas estructurales se monitoriza continuamente a través de la ecuación del esfuerzo equivalente:
+σ_v = √[ 0.5 * ((σ_x - σ_y)² + (σ_y - σ_z)² + (σ_z - σ_x)² + 6*(τ_xy² + τ_yz² + τ_zx²)) ]
+
+La IA de control restringe la operación mecánica para asegurar que σ_v permanezca siempre por debajo de 450 MPa (factor de seguridad del 50% respecto al límite elástico del titanio).
+
+---
+
+## 3. PROPULSIÓN MAGNETOHIDRODINÁMICA (MHD) Y SUPERCAVITACIÓN
+Bajo el agua marina, los 20 MW del reactor ionizan el entorno mediante arcos eléctricos periféricos. Las tres bobinas superconductoras proyectan un campo magnético masivo que acelera el fluido conductor mediante la fuerza volumétrica de Lorentz:
+F_L = J x B
+
+La densidad de corriente J se autolimita por el flujo viscoso según la ley de Ohm para fluidos en movimiento:
+J = σ * (E + v x B)
+
+Para evitar la fricción a altas velocidades (crucero de 180 nudos), el lazo térmico secundario de sodio líquido desvía el calor del núcleo nuclear hacia la proa, vaporizando el agua y envolviendo el disco en una burbuja de supercavitación.
+
+---
+
+## 4. COSECHA ENERGÉTICA Y SISTEMA DE AUTO-RECARGA
+El vehículo es energéticamente autosustentable en misiones de larga duración utilizando dos mecanismos independientes:
+
+### Extracción de Uranio Oceánico
+Los canales MHD de 15 metros están revestidos de nano-mallas orgánico-covalentes (S-COF) con grupos funcionales amidoxima. Extraen el uranilo disuelto en el agua según la cinética de pseudo-segundo orden:
+q_t = (k_2 * q_e² * t) / (1 + k_2 * q_e * t)
+
+Pulsos catódicos de desorción liberan el uranio hacia una centrífuga de inducción interna, generando 1.2 kg de Yellowcake por semana, reponiendo de forma autónoma la masa del reactor nuclear.
+
+### Cosecha Térmica de Seebeck
+En el magma, el gradiente térmico entre el exterior (1,200 °C) y la criogenia (4.2 K) activa los módulos termoeléctricos del chasis, generando megavatios eléctricos puros de respaldo:
+P_seebeck = N * α² * (T_magma - T_interno)² / R_termica
+
+---
+
+## 5. COMUNICACIONES CUÁNTICAS POR ENTRELAZAMIENTO
+Para eludir el bloqueo de radio (blackout) provocado por el escudo de plasma a 2,500 °C durante la reentrada orbital o el desplazamiento en roca fundida, el VML-15 emplea entrelazamiento de fotones mediante cristales de Borato de Bario Beta (BBO). La matriz de densidad del estado de Bell se rige por:
+ρ = |Ψ+><Ψ+|
+|Ψ+> = (1/√2) * (|0>_A |1>_B + |1>_A |0>_B)
+
+Las mediciones cuánticas de los fotones criogénicos de la nave transmiten telemetría instantánea de forma inmune a la densidad de electrones del plasma circundante.
+
+---
+
+## 6. HÁBITAT Y CÁPSULA DE TRIPULACIÓN
+El habitáculo es una esfera perfecta de 4.8 metros suspendida mecánicamente sobre cojinetes AMB en el centro exacto del triángulo.
+* Blindaje Magnético: Capas concéntricas de Mu-Metal atenúan campos magnéticos externos de 5 Teslas a una constante biológica de 50 μT.
+* Amortiguación Cinemática: Durante impactos hidráulicos a Mach 2+, la flotación sobre el colchón magnético de los aros disipa una deceleración de 80 Gs externos a solo 3.8 Gs en los asientos del personal.
+* Gestión de Desechos: Los residuos de la tripulación y del refinamiento son procesados en un vitrificador por microondas a 1,150 °C, encapsulándolos de forma segura en bloques insolubles de vidrio de borosilicato guardados en el chasis.

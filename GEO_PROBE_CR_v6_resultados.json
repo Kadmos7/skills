@@ -1,0 +1,49 @@
+{
+  "version": "6.2 UNIFICADA CANÓNICA",
+  "inventor": "Jason Manuel Sarmiento Salazar",
+  "cedula": "114510108",
+  "fecha": "2026-09-12",
+  "cambio_clave": "v6.2: REEMPLAZOS derivado por vida util + MC vars locales",
+  "auditoria_estatus": "REEMPLAZOS validado analiticamente [V]",
+  "pozo": {
+    "diam_mm": 200,
+    "prof_m": 600,
+    "dias_nodo": 19.3,
+    "T_pozo_C": 43.0
+  },
+  "ulf": {
+    "bobina": "Ferrita mu_diseno=200 mu_T=186 (teorico=383)",
+    "snr_tipico_dB": 43.0,
+    "snr_Tpozo_dB": 42.3,
+    "snr_peor_litologia_dB": 41.1,
+    "P_media_W": 39.5,
+    "arquitectura": "cable primario + ULF respaldo",
+    "kp_adaptativo": true,
+    "t_max_ulf_s": 900,
+    "peso_canal": {
+      "cable": 1.0,
+      "ulf_ok": 0.7,
+      "ulf_lento": 0.4
+    },
+    "p_ulf_necesario_eventos_mayores": 0.355
+  },
+  "costos": {
+    "capex": 3587200,
+    "contingencia_pct": 0.18,
+    "opex_30a": 20545826,
+    "reemplazos_ciclo_vida_usd": 3090000,
+    "total_30a": 27223026,
+    "bc_recomendado": 12.8,
+    "van_6pct_usd": 146527028,
+    "bc_descontado_6pct": 12.15
+  },
+  "red": {
+    "disponibilidad_nodo": 0.8889,
+    "p_min3_corr": 0.9578
+  },
+  "latencia": {
+    "cable_s": 5.7,
+    "ulf_s": 7.3
+  },
+  "fa_anual": 0.05
+}

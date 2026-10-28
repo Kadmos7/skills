@@ -1,0 +1,38 @@
+{
+  "version": "5.1 FINAL-COMPETITIVA",
+  "inventor": "Jason Manuel Sarmiento Salazar",
+  "cedula": "114510108",
+  "fecha": "2026-09-12",
+  "cambio_clave": "v5.1 FINAL: P1 Kp+latencia dual+contingencia+mu_design+VAN",
+  "pozo": {
+    "diam_mm": 200,
+    "prof_m": 600,
+    "dias_nodo": 19.3
+  },
+  "ulf": {
+    "bobina": "Ferrita mu_th=383 mu_design=200 N=1000 I=20A",
+    "snr_tipico_dB": 48.6,
+    "snr_peor_litologia_dB": 46.7,
+    "P_media_W": 39.5,
+    "arquitectura": "cable primario + ULF respaldo",
+    "kp_adaptativo": true
+  },
+  "costos": {
+    "capex": 3587200,
+    "contingencia_pct": 0.18,
+    "opex_30a": 20545826,
+    "total_30a": 27163026,
+    "bc_recomendado": 12.8,
+    "van_6pct_usd": 146554558,
+    "bc_descontado_6pct": 12.17
+  },
+  "red": {
+    "disponibilidad_nodo": 0.8889,
+    "p_min3_corr": 0.9578
+  },
+  "latencia": {
+    "cable_s": 5.7,
+    "ulf_s": 7.3
+  },
+  "fa_anual": 0.05
+}

@@ -1,0 +1,30 @@
+{
+  "version": "4.0 BOREHOLE",
+  "inventor": "Jason Manuel Sarmiento Salazar",
+  "cedula": "114510108",
+  "fecha": "2026-09-12",
+  "cambio_clave": "Eliminado reactor 350 MWt; pozo convencional 600 m",
+  "pozo": {
+    "diam_mm": 200,
+    "prof_m": 600,
+    "dias_nodo": 19.333333333333336
+  },
+  "ulf": {
+    "bobina": "Ferrita mu=150 N=1000 I=20A",
+    "snr_dB": 51.4,
+    "snr_peor_litologia_dB": 49.5,
+    "P_media_W": 53.8
+  },
+  "costos": {
+    "capex": 3198000,
+    "opex_30a": 20545826,
+    "total_30a": 26773826,
+    "bc_recomendado": 13.0
+  },
+  "red": {
+    "disponibilidad_nodo": 0.8889,
+    "p_min3_corr": 0.9578
+  },
+  "latencia_s": 7.3,
+  "fa_anual": 0.05
+}

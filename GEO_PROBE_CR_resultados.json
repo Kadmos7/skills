@@ -1,0 +1,44 @@
+{
+  "proyecto": "GEO-PROBE 3.0 PREMIUM Costa Rica",
+  "version": "3.5 COMPLETA",
+  "inventor": "Jason Manuel Sarmiento Salazar",
+  "cedula": "114510108",
+  "fecha_simulacion": "2026-09-20T05:30:23.869557+00:00",
+  "fisica": {
+    "profundidad_m": 600,
+    "potencia_MWt": 350.0,
+    "eta_excavacion": 0.22,
+    "tiempo_descenso_h": 71.94854075301433,
+    "snr_ulf_dB": 93.38126671150047,
+    "snr_peor_nodo_dB": 92.23188265424581,
+    "criogenia": {
+      "preferente": "HTS_YBCO_77K",
+      "carga_max_W": 300,
+      "backup": "cobre_300K_I_le_200A",
+      "cobre_alta_I_viable": false,
+      "squid_superficie": "dry_GM_4K_o_LHe"
+    }
+  },
+  "latencia_e2e_s": {
+    "normal": 7.3,
+    "emergencia": 4.9
+  },
+  "falsas_alarmas": {
+    "fa_por_ano": 0.05039999999999999,
+    "alertas_reales_por_ano": 0.28559999999999997,
+    "meta_cne": 2.0,
+    "cumple_meta": true
+  },
+  "finanzas": {
+    "capex_usd": 2870000,
+    "opex_30a_usd": 20649070.910887215,
+    "reemplazos_30a_usd": 3030000,
+    "total_30a_usd": 26549070.910887215,
+    "van_6pct_usd": 1088745303.6826918
+  },
+  "red": {
+    "nodos": 5,
+    "cobertura_ge3_pct": 94.14,
+    "disponibilidad_pct": 86.17605298597665
+  }
+}

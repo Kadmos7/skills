@@ -1,0 +1,348 @@
+use crate::util::CStrExt;
+use crate::util::FfiPtrExt;
+use crate::{PyObject, pystate::with_vm};
+use alloc::slice;
+use core::ffi::{c_char, c_int};
+pub use iter::*;
+pub use mapping::*;
+pub use number::*;
+use rustpython_vm::builtins::{PyDict, PyStr, PyTuple};
+use rustpython_vm::function::{FuncArgs, KwArgs, PosArgs};
+use rustpython_vm::{AsObject, Py, PyObjectRef, PyResult, VirtualMachine};
+pub use sequence::*;
+
+mod iter;
+mod mapping;
+mod number;
+mod sequence;
+
+const PY_VECTORCALL_ARGUMENTS_OFFSET: usize = 1usize << (usize::BITS as usize - 1);
+
+fn tuple_to_args(tuple: &Py<PyTuple>) -> PosArgs {
+    tuple.as_slice().to_vec().into()
+}
+
+fn dict_to_kwargs(vm: &VirtualMachine, dict: &Py<PyDict>) -> PyResult<KwArgs> {
+    dict.items_vec()
+        .into_iter()
+        .map(|(key, value)| {
+            // `to_string()` would replace lone surrogates with U+FFFD; keep the
+            // raw WTF-8 so surrogate keys round-trip (issue #8228).
+            let key = key
+                .downcast_ref::<PyStr>()
+                .map(|s| s.as_wtf8().to_owned())
+                .ok_or_else(|| vm.new_type_error("keywords must be strings"))?;
+            Ok((key, value))
+        })
+        .collect::<PyResult<_>>()
+        .map(KwArgs::new)
+}
+
+fn varargs_to_args(mut args: core::ffi::VaList<'_>) -> PosArgs {
+    core::iter::from_fn(|| unsafe {
+        args.next_arg::<*mut PyObject>()
+            .assume_borrowed_or_opt()
+            .map(ToOwned::to_owned)
+    })
+    .collect::<Vec<_>>()
+    .into()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_Call(
+    callable: *mut PyObject,
+    args: *mut PyObject,
+    kwargs: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| {
+        let callable = unsafe { callable.assume_borrowed() };
+        let args = tuple_to_args(unsafe { args.assume_borrowed_and_cast::<PyTuple>(vm) }?);
+
+        let kwargs: Option<KwArgs> = unsafe { kwargs.assume_borrowed_or_opt() }
+            .map(|kwargs| dict_to_kwargs(vm, kwargs.try_downcast_ref::<PyDict>(vm)?))
+            .transpose()?;
+
+        callable.call_with_args(FuncArgs::new(args, kwargs.unwrap_or_default()), vm)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_CallNoArgs(callable: *mut PyObject) -> *mut PyObject {
+    with_vm(|vm| unsafe { callable.assume_borrowed() }.call((), vm))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_CallObject(
+    callable: *mut PyObject,
+    args: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| {
+        let callable = unsafe { callable.assume_borrowed() };
+        if let Some(args) = unsafe { args.assume_borrowed_or_opt() } {
+            callable.call(tuple_to_args(args.try_downcast_ref::<PyTuple>(vm)?), vm)
+        } else {
+            callable.call((), vm)
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_CallMethodObjArgs(
+    receiver: *mut PyObject,
+    name: *mut PyObject,
+    args: ...
+) -> *mut PyObject {
+    with_vm(|vm| {
+        let method_name = unsafe { name.assume_borrowed_and_cast::<PyStr>(vm)? };
+        let callable = unsafe { receiver.assume_borrowed().get_attr(method_name, vm)? };
+        callable.call(varargs_to_args(args), vm)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_CallFunctionObjArgs(
+    callable: *mut PyObject,
+    args: ...
+) -> *mut PyObject {
+    with_vm(|vm| unsafe { callable.assume_borrowed() }.call(varargs_to_args(args), vm))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_Vectorcall(
+    callable: *mut PyObject,
+    args: *const *mut PyObject,
+    nargsf: usize,
+    kwnames: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| {
+        let num_positional_args = nargsf & !PY_VECTORCALL_ARGUMENTS_OFFSET;
+
+        let kwnames: Option<&[PyObjectRef]> = unsafe {
+            kwnames
+                .assume_borrowed_or_opt()
+                .map(|tuple| Ok(tuple.try_downcast_ref::<PyTuple>(vm)?.as_slice()))
+                .transpose()?
+        };
+
+        let args_len = num_positional_args + kwnames.map_or(0, <[PyObjectRef]>::len);
+        let args = if args_len == 0 {
+            Vec::new()
+        } else {
+            unsafe { slice::from_raw_parts(args, args_len) }
+                .iter()
+                .map(|arg| unsafe { arg.assume_borrowed() }.to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        let callable = unsafe { callable.assume_borrowed() };
+        callable.vectorcall(args, num_positional_args, kwnames, vm)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_VectorcallMethod(
+    name: *mut PyObject,
+    args: *const *mut PyObject,
+    nargsf: usize,
+    kwnames: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| {
+        let args_len = nargsf & !PY_VECTORCALL_ARGUMENTS_OFFSET;
+
+        if args_len == 0 {
+            return Err(vm.new_system_error("PyObject_VectorcallMethod called with no receiver"));
+        }
+
+        let (receiver, args) = unsafe { slice::from_raw_parts(args, args_len) }
+            .split_first()
+            .expect("args_len > 0 should guarantee a receiver");
+
+        let method_name = unsafe { name.assume_borrowed_and_cast::<PyStr>(vm)? };
+        let callable = unsafe { receiver.assume_borrowed().get_attr(method_name, vm)? };
+
+        Ok(unsafe {
+            PyObject_Vectorcall(
+                callable.as_object().as_raw().cast_mut(),
+                args.as_ptr(),
+                nargsf - 1,
+                kwnames,
+            )
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyVectorcall_Call(
+    callable: *mut PyObject,
+    tuple: *mut PyObject,
+    kwargs: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| {
+        let callable = unsafe { callable.assume_borrowed() };
+        let tuple = unsafe { tuple.assume_borrowed_and_cast::<PyTuple>(vm) }?;
+
+        let mut args = tuple.as_slice().to_vec();
+        let num_positional_args = args.len();
+
+        let mut kwnames = Vec::new();
+        if let Some(kwargs) = unsafe { kwargs.assume_borrowed_or_opt() } {
+            let kwargs = kwargs.try_downcast_ref::<PyDict>(vm)?;
+            for (key, value) in kwargs.items_vec() {
+                let key = key
+                    .downcast_ref::<PyStr>()
+                    .map(ToOwned::to_owned)
+                    .ok_or_else(|| vm.new_type_error("keywords must be strings"))?;
+                kwnames.push(key.into());
+                args.push(value);
+            }
+        }
+
+        let kwnames = if kwnames.is_empty() {
+            None
+        } else {
+            Some(kwnames.as_slice())
+        };
+
+        callable.vectorcall(args, num_positional_args, kwnames, vm)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_GetItem(obj: *mut PyObject, key: *mut PyObject) -> *mut PyObject {
+    with_vm(|vm| {
+        let obj = unsafe { obj.assume_borrowed() };
+        let key = unsafe { key.assume_borrowed() };
+        obj.get_item(key, vm)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_SetItem(
+    obj: *mut PyObject,
+    key: *mut PyObject,
+    value: *mut PyObject,
+) -> c_int {
+    with_vm(|vm| {
+        let obj = unsafe { obj.assume_borrowed() };
+        let key = unsafe { key.assume_borrowed() };
+        let value = unsafe { value.assume_borrowed() }.to_owned();
+        obj.set_item(key, value, vm)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_DelItem(obj: *mut PyObject, key: *mut PyObject) -> c_int {
+    with_vm(|vm| {
+        let obj = unsafe { obj.assume_borrowed() };
+        let key = unsafe { key.assume_borrowed() };
+        obj.del_item(key, vm)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_DelItemString(obj: *mut PyObject, key: *const c_char) -> c_int {
+    with_vm(|vm| {
+        let obj = unsafe { obj.assume_borrowed() };
+        let key = unsafe { key.try_as_str(vm) }?;
+        obj.del_item(key, vm)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_Format(
+    obj: *mut PyObject,
+    format_spec: *mut PyObject,
+) -> *mut PyObject {
+    with_vm(|vm| {
+        let obj = unsafe { obj.assume_borrowed() };
+        let spec = unsafe { format_spec.assume_borrowed_or_opt() }
+            .map(|spec| spec.try_downcast_ref::<PyStr>(vm))
+            .transpose()?
+            .unwrap_or_else(|| vm.ctx.empty_str);
+        vm.format(obj, spec.to_owned())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_IsSubclass(derived: *mut PyObject, cls: *mut PyObject) -> c_int {
+    with_vm(|vm| {
+        let derived = unsafe { derived.assume_borrowed() };
+        let cls = unsafe { cls.assume_borrowed() };
+        derived.is_subclass(cls, vm)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_IsInstance(inst: *mut PyObject, cls: *mut PyObject) -> c_int {
+    with_vm(|vm| {
+        let inst = unsafe { inst.assume_borrowed() };
+        let cls = unsafe { cls.assume_borrowed() };
+        inst.is_instance(cls, vm)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_Size(obj: *mut PyObject) -> isize {
+    with_vm(|vm| {
+        let obj = unsafe { obj.assume_borrowed() };
+        obj.length(vm)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_Length(obj: *mut PyObject) -> isize {
+    unsafe { PyObject_Size(obj) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_Type(obj: *mut PyObject) -> *mut PyObject {
+    with_vm(|_vm| unsafe { obj.assume_borrowed() }.obj_type())
+}
+
+#[cfg(test)]
+mod tests {
+    use pyo3::prelude::*;
+    use pyo3::types::{PyDict, PyString};
+
+    #[test]
+    fn call_method0() {
+        Python::attach(|py| {
+            let string = PyString::new(py, "Hello, World!");
+            assert_eq!(
+                string.call_method0("upper").unwrap().str().unwrap(),
+                "HELLO, WORLD!"
+            );
+        })
+    }
+
+    #[test]
+    fn call_method1() {
+        Python::attach(|py| {
+            let string = PyString::new(py, "Hello, World!");
+            assert!(
+                string
+                    .call_method1("endswith", ("!",))
+                    .unwrap()
+                    .is_truthy()
+                    .unwrap()
+            );
+        })
+    }
+
+    #[test]
+    fn object_set_get_del_item() {
+        Python::attach(|py| {
+            let obj = PyDict::new(py).into_any();
+            obj.set_item("key", "value").unwrap();
+            assert_eq!(
+                obj.get_item("key")
+                    .unwrap()
+                    .cast_into::<PyString>()
+                    .unwrap(),
+                "value"
+            );
+            obj.del_item("key").unwrap();
+            assert!(obj.get_item("key").is_err());
+        })
+    }
+}

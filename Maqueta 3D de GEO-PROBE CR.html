@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Maqueta 3D de GEO-PROBE CR</title>
+<style>
+:root{--bg:#eef2f3;--ink:#17262c;--panel:rgba(255,255,255,.9);--line:#c3d0d4;--teal:#0f4c5c;--cu:#b8641f;--sig:#0aa6c2;--al:#e0482b;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0e171b;--ink:#e4eef0;--panel:rgba(20,32,37,.9);--line:#2c4048;--teal:#5fb8cc;--cu:#e0914d;--sig:#38d3ee;--al:#ff6a4a}}
+:root[data-theme="dark"]{--bg:#0e171b;--ink:#e4eef0;--panel:rgba(20,32,37,.9);--line:#2c4048;--teal:#5fb8cc;--cu:#e0914d;--sig:#38d3ee;--al:#ff6a4a}
+html{height:100%;scroll-padding-top:env(safe-area-inset-top,0px)}
+body{height:100%;margin:0;overflow:hidden;background:var(--bg);color:var(--ink);font:14px/1.4 ui-sans-serif,system-ui,"Segoe UI",sans-serif}
+canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+#l{position:fixed;inset:0;pointer-events:none;overflow:hidden}
+.lb{position:fixed;left:0;top:0;display:none;font-size:12px;padding:1px 6px;border-radius:3px;background:var(--panel);border:1px solid var(--line);white-space:nowrap}
+.p{position:fixed;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 12px;backdrop-filter:blur(6px);max-width:min(340px,calc(100% - 24px))}
+#a{left:12px;top:calc(env(safe-area-inset-top,0px) + 12px)}
+#i{left:12px;bottom:calc(env(safe-area-inset-bottom,0px) + 12px);max-width:min(520px,calc(100% - 24px))}
+h1{font-size:16px;margin:0 0 2px;font-weight:650}
+.m{font-size:12px;opacity:.75;margin-bottom:8px}
+.b{font:inherit;color:var(--ink);background:transparent;border:1px solid var(--line);border-radius:4px;padding:5px 10px;margin-right:6px;cursor:pointer}
+.b.on{background:var(--teal);color:var(--bg);border-color:var(--teal)}
+.b:focus-visible{outline:2px solid var(--sig);outline-offset:2px}
+details{margin-top:8px}summary{cursor:pointer}
+#ly label{display:block;padding:2px 0}
+#ib{font-size:13px;margin-top:2px}
+</style></head><body>
+<canvas id="c"></canvas><div id="l"></div>
+<div class="p" id="a">
+<h1>Maqueta 3D de GEO-PROBE CR</h1>
+<div class="m">Modelo v7.6. Escalas exageradas para que se vea; ubicaciones ilustrativas.</div>
+<button id="bn" class="b on">Red nacional</button><button id="bd" class="b">Nodo en corte</button>
+<details open><summary>Capas</summary><div id="ly"></div></details>
+</div>
+<div class="p" id="i"><b id="it"></b><div id="ib"></div></div>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+const T=THREE,$=i=>document.getElementById(i),tok=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim()||'#888';
+const RM=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const R=new T.WebGLRenderer({canvas:$('c'),antialias:true});R.setPixelRatio(Math.min(devicePixelRatio,2));
+const S=new T.Scene(),C=new T.PerspectiveCamera(48,1,.1,3000),O=new T.OrbitControls(C,R.domElement);O.enableDamping=true;
+S.add(new T.HemisphereLight(0xffffff,0x56616b,1));
+const sun=new T.DirectionalLight(0xffffff,.8);sun.position.set(40,80,30);S.add(sun);
+const G={net:new T.Group(),det:new T.Group()};S.add(G.net,G.det);
+const th=[],LY={},clk=[],lbs=[],pul=[],rng=[],wav=[];
+const mat=(n,o={})=>{const m=new T.MeshStandardMaterial({roughness:.55,metalness:.15,...o});th.push([m,n]);return m};
+const fx=(c,o={})=>new T.MeshStandardMaterial({color:c,roughness:.6,metalness:.2,...o});
+const lm=n=>{const m=new T.LineBasicMaterial();th.push([m,n]);return m};
+const reg=(k,o)=>{(LY[k]=LY[k]||[]).push(o);return o};
+const add=(g,m,p,grp,info,ly)=>{const x=new T.Mesh(g,m);x.position.set(...p);G[grp].add(x);if(info){x.userData.i=info;clk.push(x)}if(ly)reg(ly,x);return x};
+const ln=(pts,m,grp,ly)=>{const l=new T.Line(new T.BufferGeometry().setFromPoints(pts),m);G[grp].add(l);reg(ly,l);return l};
+const pt=(x,y,z,grp)=>{const o=new T.Object3D();o.position.set(x,y,z);G[grp].add(o);return o};
+const lab=(t,o,grp)=>{const e=document.createElement('div');e.className='lb';e.textContent=t;$('l').appendChild(e);lbs.push({e,o,grp})};
+const I={
+pozo:['Pozo','Ø240 mm y 600 m de profundidad, con perforación rotatoria comercial. Sin reactor ni fusión de roca.'],
+sonda:['Sonda','Ø220 mm × 6 m, carcasa de titanio y PTFE. Aloja los sensores y el emisor ULF.'],
+nucleo:['Núcleo de ferrita','MnZn, Ø185 mm × 4 m, 516 kg por nodo. Permeabilidad efectiva utilizable de unos 156.'],
+bobina:['Bobina emisora','1000 vueltas a 6.5 A y 2 Hz, ciclo de trabajo de 17 %: unos 7.3 W de potencia media.'],
+rb:['Magnetómetro Rb-87','Dos por nodo, dentro del pozo.'],
+das:['Fibra óptica DAS','Recorre el pozo y mide deformación y vibración.'],
+cable:['Cable armado','Canal primario de telemetría, con peso de confianza 1.00.'],
+ulf:['Enlace ULF de respaldo','2 Hz a través de la roca: unos 25 pT en superficie a 600 m y SNR de unos 40 dB con ruido típico. Entra en juego si el cable se corta durante el sismo.'],
+cab:['Estación de superficie','Receptor SQUID, interrogador DAS y cómputo local.'],
+mast:['Telecom','Enlace ICE y satelital LEO hacia el centro de cómputo.'],
+hub:['OVSICORI y gateway CNE','El cómputo bayesiano multi-nodo decide el escalamiento. El código 111 sale por Cell Broadcast (unos 2 s) solo con cuórum, P > 0.85 y canal confiable.'],
+ring:['Alerta Cell Broadcast','Difusión con geofencing por operadores móviles.']};
+
+/* Red nacional */
+const xz=(a,b)=>[(b+84.25)*28,-(a-9.6)*28];
+const land=[[11.05,-85.7],[10.95,-85],[11,-83.8],[10.7,-83.6],[9.9,-83],[9.4,-82.6],[8.8,-82.9],[8.4,-83.2],[8.5,-83.7],[9,-84.2],[9.7,-85],[9.9,-85.7]].map(([a,b])=>{const[x,z]=xz(a,b);return new T.Vector2(x,-z)});
+const L0=new T.Mesh(new T.ShapeGeometry(new T.Shape(land)),mat('--teal',{transparent:true,opacity:.3,side:T.DoubleSide}));
+L0.rotation.x=-Math.PI/2;G.net.add(L0);reg('terreno',L0);
+ln([...land,land[0]].map(v=>new T.Vector3(v.x,.05,-v.y)),lm('--teal'),'net','terreno');
+const gh=new T.GridHelper(120,24,0x7a8c93,0x7a8c93);gh.material.transparent=true;gh.material.opacity=.25;gh.position.y=-.05;G.net.add(gh);reg('terreno',gh);
+const HUB=new T.Vector3(14,7,-18);
+const hub=add(new T.OctahedronGeometry(2.2),mat('--al'),HUB.toArray(),'net',I.hub,'pozo');lab('OVSICORI y CNE',hub,'net');
+[['Osa',8.55,-83.5],['Gran Área Metropolitana',9.93,-84.08],['Tilarán y Arenal',10.46,-84.7],['Cinturón Central',10.2,-84.2],['Limón',10,-83.03]].forEach(([n,a,b])=>{
+const[x,z]=xz(a,b);
+const p=add(new T.CylinderGeometry(.7,.7,4,16),mat('--teal'),[x,2,z],'net',I.pozo,'pozo');p.userData.node=n;
+const top=add(new T.SphereGeometry(1,16,12),mat('--sig'),[x,4.6,z],'net',null,'pozo');lab(n,top,'net');
+const cv=new T.QuadraticBezierCurve3(new T.Vector3(x,4.6,z),new T.Vector3((x+HUB.x)/2,14,(z+HUB.z)/2),HUB);
+ln(cv.getPoints(48),lm('--sig'),'net','telecom');
+const pm=add(new T.SphereGeometry(.45,8,8),mat('--sig'),[x,4.6,z],'net',null,'telecom');pul.push({m:pm,c:cv,t:Math.random()})});
+for(let i=0;i<3;i++){const r=add(new T.RingGeometry(1,1.15,64),mat('--al',{transparent:true,side:T.DoubleSide}),HUB.toArray(),'net',I.ring,'alerta');r.rotation.x=-Math.PI/2;rng.push(r)}
+
+/* Nodo en corte: 1 unidad = 10 m de profundidad */
+add(new T.BoxGeometry(40,60,40),mat('--teal',{transparent:true,opacity:.1,depthWrite:false}),[0,-30,0],'det',null,'terreno');
+const ed=new T.LineSegments(new T.EdgesGeometry(new T.BoxGeometry(40,60,40)),lm('--line'));ed.position.y=-30;G.det.add(ed);reg('terreno',ed);
+[[-7,0xc9a66b],[-24,0x8b7a62],[-46,0x5f6f78]].forEach(([y,c])=>add(new T.BoxGeometry(40,.25,40),fx(c,{transparent:true,opacity:.5}),[0,y,0],'det',null,'terreno'));
+add(new T.CylinderGeometry(.55,.55,60,24,1,true),mat('--ink',{transparent:true,opacity:.18,side:T.DoubleSide,depthWrite:false}),[0,-30,0],'det',I.pozo,'pozo');
+add(new T.CylinderGeometry(.5,.5,5,24),fx(0xa9b4bb,{transparent:true,opacity:.35,metalness:.5}),[0,-57,0],'det',I.sonda,'pozo');
+add(new T.CylinderGeometry(.28,.28,3.4,24),fx(0x2d3239),[0,-57,0],'det',I.nucleo,'pozo');
+add(new T.CylinderGeometry(.36,.36,3.4,20,14,true),mat('--cu',{wireframe:true}),[0,-57,0],'det',I.bobina,'pozo');
+[-55.3,-58.7].forEach(y=>add(new T.SphereGeometry(.13,12,10),mat('--sig'),[.3,y,.1],'det',I.rb,'pozo'));
+add(new T.CylinderGeometry(.07,.07,54.5,8),mat('--cu'),[-.32,-27.25,0],'det',I.cable,'cable');
+add(new T.CylinderGeometry(.04,.04,59.5,8),mat('--sig'),[.32,-29.75,0],'det',I.das,'cable');
+const cab=add(new T.BoxGeometry(4,2.4,3.4),fx(0xd8e0e3),[7,1.2,0],'det',I.cab,'pozo');
+const lk=add(new T.CylinderGeometry(.07,.07,5.2,8),mat('--cu'),[3,.2,0],'det',null,'cable');lk.rotation.z=Math.PI/2;
+add(new T.CylinderGeometry(.12,.12,6,10),fx(0x8a969c),[11,3,0],'det',I.mast,'telecom');
+const ds=add(new T.SphereGeometry(1.3,20,10,0,2*Math.PI,0,1.1),fx(0xe8eef0,{side:T.DoubleSide}),[11,6.4,0],'det',I.mast,'telecom');ds.rotation.z=-.7;
+add(new T.CylinderGeometry(3,3,56,20,1,true),new T.MeshBasicMaterial({transparent:true,opacity:0,depthWrite:false,side:T.BackSide}),[0,-29,0],'det',I.ulf,'ulf');
+for(const L of[4,7])for(let k=0;k<4;k++){const p=[];for(let i=0;i<=48;i++){const q=.06+(Math.PI-.12)*i/48,r=L*Math.sin(q)**2,h=r*Math.sin(q),f=k*Math.PI/4;p.push(new T.Vector3(h*Math.cos(f),-57+r*Math.cos(q),h*Math.sin(f)))}ln(p,lm('--sig'),'det','ulf')}
+for(let i=0;i<7;i++){const w=add(new T.TorusGeometry(3,.06,8,48),mat('--sig',{transparent:true}),[0,-57,0],'det',null,'ulf');w.rotation.x=Math.PI/2;wav.push(w)}
+ln([new T.Vector3(-21,0,0),new T.Vector3(-21,-60,0)],lm('--ink'),'det','terreno');
+[['0 m',0],['300 m',-30],['600 m',-60]].forEach(([t,y])=>lab(t,pt(-21,y,0,'det'),'det'));
+lab('Estación de superficie',pt(7,3.2,0,'det'),'det');lab('Telecom ICE y LEO',pt(11,8.4,0,'det'),'det');
+lab('Sonda de Ø220 mm',pt(1.5,-53.6,0,'det'),'det');lab('Enlace ULF de 2 Hz',pt(2.5,-32,0,'det'),'det');
+
+/* Interfaz */
+const LAYERS=[['terreno','Terreno y estratos'],['pozo','Pozos, sondas y estaciones'],['cable','Cable armado y fibra DAS'],['ulf','Enlace ULF de respaldo'],['telecom','Telecom ICE y LEO'],['alerta','Alerta Cell Broadcast 111'],['rot','Etiquetas']];
+$('ly').innerHTML=LAYERS.map(([k,n])=>`<label><input type="checkbox" data-k="${k}" checked> ${n}</label>`).join('');
+let lblOn=true,W=1,H=1;
+$('ly').addEventListener('change',e=>{const k=e.target.dataset.k,on=e.target.checked;if(k==='rot')lblOn=on;else(LY[k]||[]).forEach(o=>o.visible=on)});
+if(innerWidth<640)document.querySelector('details').open=false;
+const info=(a,b)=>{$('it').textContent=a;$('ib').textContent=b};
+function view(v,n){G.net.visible=v==='net';G.det.visible=v==='det';$('bn').classList.toggle('on',v==='net');$('bd').classList.toggle('on',v==='det');
+if(v==='net'){C.position.set(2,78,62);O.target.set(6,0,-10);info('Red nacional','Cinco nodos con pozo de 600 m, enlazados por telecom al centro de cómputo y al gateway de alerta. Toca un nodo para ver su corte.')}
+else{C.position.set(52,-6,74);O.target.set(0,-28,0);info(n?'Nodo de '+n:'Nodo en corte','El diseño es el mismo en los cinco nodos. Profundidad comprimida y anchos exagerados. Toca un componente para ver sus datos.')}O.update()}
+$('bn').onclick=()=>view('net');$('bd').onclick=()=>view('det');
+const vis=o=>{for(;o;o=o.parent)if(!o.visible)return false;return true};
+let dn=null;
+R.domElement.addEventListener('pointerdown',e=>{dn=[e.clientX,e.clientY]});
+R.domElement.addEventListener('pointerup',e=>{if(!dn||Math.hypot(e.clientX-dn[0],e.clientY-dn[1])>5)return;dn=null;
+const rc=new T.Raycaster();rc.setFromCamera(new T.Vector2(e.clientX/W*2-1,-e.clientY/H*2+1),C);
+const h=rc.intersectObjects(clk.filter(vis),false)[0];if(!h)return;const o=h.object;
+if(o.userData.node){view('det',o.userData.node);return}info(...o.userData.i)});
+function rs(){W=innerWidth;H=innerHeight;R.setSize(W,H,false);C.aspect=W/H;C.updateProjectionMatrix()}
+addEventListener('resize',rs);rs();view('net');
+const v3=new T.Vector3(),clock=new T.Clock();let lastBg='';
+function loop(){requestAnimationFrame(loop);const t=RM?0:clock.getElapsedTime();
+const bg=tok('--bg');if(bg!==lastBg){lastBg=bg;S.background=new T.Color(bg);th.forEach(([m,n])=>m.color.set(tok(n)))}
+if(!RM)pul.forEach(p=>{p.t=(p.t+.004)%1;p.m.position.copy(p.c.getPoint(p.t))});
+rng.forEach((r,i)=>{const k=(t/3+i/3)%1;r.scale.setScalar(1+k*13);r.material.opacity=.8*(1-k)});
+wav.forEach((w,i)=>{const k=(t/5+i/7)%1;w.position.y=-57+k*56;w.scale.setScalar(1+k*2);w.material.opacity=.9*(1-k)});
+O.update();R.render(S,C);
+lbs.forEach(l=>{l.o.getWorldPosition(v3);v3.project(C);const s=lblOn&&G[l.grp].visible&&v3.z<1;l.e.style.display=s?'block':'none';if(s)l.e.style.transform=`translate(${(v3.x*.5+.5)*W}px,${(-v3.y*.5+.5)*H}px) translate(-50%,-135%)`})}
+loop();
+</script></body></html>

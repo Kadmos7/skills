@@ -1,0 +1,898 @@
+#[cfg(feature = "parser")]
+use ruff_python_parser::{LexicalErrorType, ParseErrorType};
+
+use rustpython_common::wtf8::Wtf8Buf;
+use rustpython_compiler_core::SourceLocation;
+
+use core::ops::RangeInclusive;
+
+#[cfg(feature = "parser")]
+use rustpython_compiler::is_blank_python_source;
+
+use crate::{
+    AsObject, Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult,
+    builtins::{
+        PyAttributeError, PyBaseException, PyBaseExceptionRef, PyBytesRef, PyDictRef,
+        PyImportError, PyMemoryError, PyModule, PyNameError, PyOSError, PyStopIteration, PyStrRef,
+        PySyntaxError, PySystemExit, PyType, PyTypeRef,
+        builtin_func::PyNativeFunction,
+        code::{IntoCodeObject, PyCode},
+        descriptor::PyMethodDescriptor,
+        tuple::{IntoPyTuple, PyTupleRef},
+    },
+    convert::{ToPyException, ToPyObject},
+    exceptions::OSErrorBuilder,
+    function::{
+        FuncArgs, IntoPyNativeFn, PyMethodFlags, arity_message, unexpected_keyword_message,
+    },
+    scope::Scope,
+    set_attrs,
+    types::{Constructor, Initializer},
+    vm::VirtualMachine,
+};
+
+macro_rules! define_exception_fn {
+    (
+        fn $fn_name:ident, $attr:ident, $python_repr:ident
+    ) => {
+        #[doc = concat!(
+                    "Create a new python ",
+                    stringify!($python_repr),
+                    " object.\nUseful for raising errors from python functions implemented in rust."
+                )]
+        pub fn $fn_name(&self, msg: impl Into<Wtf8Buf>) -> $crate::builtins::PyBaseExceptionRef {
+            let err = self.ctx.exceptions.$attr.to_owned();
+            self.new_simple_exception(err, vec![self.ctx.new_str(msg.into()).into()])
+        }
+    };
+}
+
+/// Collection of object creation helpers
+impl VirtualMachine {
+    /// Create a new python object
+    pub fn new_pyobj(&self, value: impl ToPyObject) -> PyObjectRef {
+        value.to_pyobject(self)
+    }
+
+    pub fn new_code(&self, code: impl IntoCodeObject) -> PyRef<PyCode> {
+        let code = code.into_pycode(self);
+        PyRef::new_ref(code, self.ctx.types.code_type.to_owned(), None)
+    }
+
+    pub fn new_tuple(&self, value: impl IntoPyTuple) -> PyTupleRef {
+        value.into_pytuple(self)
+    }
+
+    pub fn new_module(
+        &self,
+        name: &str,
+        dict: PyDictRef,
+        doc: Option<PyStrRef>,
+    ) -> PyRef<PyModule> {
+        let module = PyRef::new_ref(
+            PyModule::new(),
+            self.ctx.types.module_type.to_owned(),
+            Some(dict),
+        );
+        module.init_dict(self.ctx.intern_str(name), doc, self);
+        module
+    }
+
+    pub fn new_scope_with_builtins(&self) -> Scope {
+        Scope::with_builtins(None, self.ctx.new_dict(), self)
+    }
+
+    pub fn new_scope_with_main(&self) -> PyResult<Scope> {
+        let globals = self.ctx.new_dict();
+        let scope = Scope::with_builtins(None, globals.clone(), self);
+        let main_module = self.new_module("__main__", globals.clone(), None);
+
+        self.sys_module.get_attr("modules", self)?.set_item(
+            "__main__",
+            main_module.into(),
+            self,
+        )?;
+        self.set_main_builtin_importer(&globals)?;
+
+        Ok(scope)
+    }
+
+    /// Create `__main__` if it is missing and return it.
+    pub fn ensure_main_module(&self) -> PyResult<PyRef<PyModule>> {
+        let sys_modules = self.sys_module.get_attr("modules", self)?;
+        let module = if let Ok(existing) = sys_modules.get_item("__main__", self)
+            && let Ok(module) = existing.downcast::<PyModule>()
+        {
+            module
+        } else {
+            let dict = self.ctx.new_dict();
+            let main_module = self.new_module("__main__", dict, None);
+            sys_modules.set_item("__main__", main_module.clone().into(), self)?;
+            main_module
+        };
+        self.set_main_builtin_importer(&module.dict())?;
+        Ok(module)
+    }
+
+    /// Set `__main__.__loader__` to BuiltinImporter when it is missing or None.
+    pub fn set_main_builtin_importer(
+        &self,
+        module_dict: &Py<crate::builtins::PyDict>,
+    ) -> PyResult<()> {
+        if let Ok(loader) = module_dict.get_item("__loader__", self)
+            && !self.is_none(&loader)
+        {
+            return Ok(());
+        }
+        let sys_modules = self.sys_module.get_attr("modules", self)?;
+        let Ok(importlib) = sys_modules.get_item("_frozen_importlib", self) else {
+            return Ok(());
+        };
+        let loader = importlib.get_attr("BuiltinImporter", self)?;
+        module_dict.set_item("__loader__", loader, self)?;
+        Ok(())
+    }
+
+    /// `__dict__` of this interpreter's `__main__` module.
+    pub fn main_namespace(&self) -> PyResult<PyDictRef> {
+        let main = self.ensure_main_module()?;
+        Ok(main.dict())
+    }
+
+    pub fn new_function<F, FKind>(&self, name: &'static str, f: F) -> PyRef<PyNativeFunction>
+    where
+        F: IntoPyNativeFn<FKind>,
+    {
+        let def = self.ctx.new_method_def(
+            name,
+            f,
+            PyMethodFlags::empty(),
+            crate::function::ItemDoc::NONE,
+        );
+        def.build_function(self, None)
+    }
+
+    pub fn new_method<F, FKind>(
+        &self,
+        name: &'static str,
+        class: &'static Py<PyType>,
+        f: F,
+    ) -> PyRef<PyMethodDescriptor>
+    where
+        F: IntoPyNativeFn<FKind>,
+    {
+        let def = self.ctx.new_method_def(
+            name,
+            f,
+            PyMethodFlags::METHOD,
+            crate::function::ItemDoc::NONE,
+        );
+        def.build_method(class, self)
+    }
+
+    /// Allocate a `BaseException`-layout instance without running `__new__`/`__init__`.
+    ///
+    /// Only valid when `exc_type` uses the `BaseException` payload. Extra-payload
+    /// types (OSError, UnicodeError, ExceptionGroup, SystemExit, ...) must use
+    /// [`new_exception`][Self::new_exception] or
+    /// [`invoke_exception`][Self::invoke_exception].
+    pub fn new_simple_exception(
+        &self,
+        exc_type: PyTypeRef,
+        args: Vec<PyObjectRef>,
+    ) -> PyBaseExceptionRef {
+        debug_assert_eq!(
+            exc_type.slots.basicsize,
+            crate::object::SIZEOF_PYOBJECT_HEAD + core::mem::size_of::<PyBaseException>(),
+            "vm.new_simple_exception() requires a BaseException-sized type, got {}",
+            exc_type.name()
+        );
+        PyBaseException::new(args, self)
+            .into_ref_with_type_lazy_dict(self, exc_type)
+            .expect("vm.new_simple_exception() called with an invalid exception type")
+    }
+
+    /// Instantiate an exception with arguments.
+    ///
+    /// `BaseException`-sized types use
+    /// [`new_simple_exception`][Self::new_simple_exception]. Extra-payload types
+    /// run the type constructor so their fields are initialized. User-defined
+    /// types that override `__new__`/`__init__` should still use
+    /// [`invoke_exception`][Self::invoke_exception] or
+    /// [`exceptions::ExceptionCtor`][crate::exceptions::ExceptionCtor].
+    pub fn new_exception(&self, exc_type: PyTypeRef, args: Vec<PyObjectRef>) -> PyBaseExceptionRef {
+        if exc_type.slots.basicsize
+            == crate::object::SIZEOF_PYOBJECT_HEAD + core::mem::size_of::<PyBaseException>()
+        {
+            self.new_simple_exception(exc_type, args)
+        } else {
+            self.invoke_exception(&exc_type, args).unwrap_or_else(|e| e)
+        }
+    }
+
+    /// Construct a built-in exception type that carries a payload, directly
+    /// (`py_new` + `slot_init`), without routing through `PyType::call`.
+    /// Only valid for a built-in `T` whose exact type is known at compile time.
+    pub fn new_payload_exception<T>(&self, cls: PyTypeRef, args: FuncArgs) -> PyResult<PyRef<T>>
+    where
+        T: Constructor<Args = FuncArgs> + Initializer,
+    {
+        debug_assert_eq!(
+            cls.slots.basicsize,
+            crate::object::SIZEOF_PYOBJECT_HEAD + size_of::<T>(),
+            "vm.new_payload_exception::<{}>() called with mismatched type '{}'",
+            core::any::type_name::<T>(),
+            cls.name()
+        );
+        let obj = T::slot_new(cls, args.clone(), self)?;
+        T::slot_init(&obj, args, self)?;
+        obj.downcast().map_err(|obj| {
+            self.new_type_error(format!(
+                "payload constructor returned '{}'",
+                obj.class().name()
+            ))
+        })
+    }
+
+    pub fn new_os_error(&self, msg: impl ToPyObject) -> PyRef<PyBaseException> {
+        self.new_os_subtype_error(self.ctx.exceptions.os_error.to_owned(), None, msg)
+            .upcast()
+    }
+
+    pub fn new_os_subtype_error(
+        &self,
+        exc_type: PyTypeRef,
+        errno: Option<i32>,
+        msg: impl ToPyObject,
+    ) -> PyRef<PyOSError> {
+        debug_assert_eq!(
+            exc_type.slots.basicsize,
+            crate::object::SIZEOF_PYOBJECT_HEAD + core::mem::size_of::<PyOSError>()
+        );
+
+        OSErrorBuilder::with_subtype(exc_type, errno, msg, self).build(self)
+    }
+
+    /// Instantiate an exception with no arguments.
+    pub fn new_exception_empty(&self, exc_type: PyTypeRef) -> PyBaseExceptionRef {
+        self.new_exception(exc_type, vec![])
+    }
+
+    /// Instantiate an exception with `msg` as the only argument.
+    pub fn new_exception_msg(&self, exc_type: PyTypeRef, msg: Wtf8Buf) -> PyBaseExceptionRef {
+        self.new_exception(exc_type, vec![self.ctx.new_str(msg).into()])
+    }
+
+    /// Instantiate an exception with `msg` as the only argument and `dict` for object
+    /// This function should only be used with builtin exception types; if a user-defined exception
+    /// type is passed in, it may not be fully initialized; try using
+    /// [`vm.invoke_exception()`][Self::invoke_exception] or
+    /// [`exceptions::ExceptionCtor`][crate::exceptions::ExceptionCtor] instead.
+    pub fn new_exception_msg_dict(
+        &self,
+        exc_type: PyTypeRef,
+        msg: Wtf8Buf,
+        dict: PyDictRef,
+    ) -> PyBaseExceptionRef {
+        PyRef::new_ref(
+            // TODO: this constructor might be invalid, because multiple
+            // exception (even builtin ones) are using custom constructors,
+            // see `OSError` as an example:
+            PyBaseException::new(vec![self.ctx.new_str(msg).into()], self),
+            exc_type,
+            Some(dict),
+        )
+    }
+
+    pub fn new_no_attribute_error(&self, obj: PyObjectRef, name: PyStrRef) -> PyBaseExceptionRef {
+        let msg = format!(
+            "'{}' object has no attribute '{}'",
+            obj.class().slot_name(),
+            name
+        );
+        let attribute_error = self.new_attribute_error(msg);
+
+        // Use existing set_attribute_error_context function
+        self.set_attribute_error_context(&attribute_error, obj, name);
+
+        attribute_error
+    }
+
+    pub fn new_name_error(&self, msg: impl Into<Wtf8Buf>, name: PyStrRef) -> PyBaseExceptionRef {
+        let name_error = self
+            .new_payload_exception::<PyNameError>(
+                self.ctx.exceptions.name_error.to_owned(),
+                vec![self.ctx.new_str(msg.into()).into()].into(),
+            )
+            .expect("NameError construction from internal args is infallible");
+        set_attrs!(
+            name_error.as_object(), self, unwrap,
+            "name" => name,
+        );
+
+        name_error.upcast()
+    }
+
+    /// The error a call that passed the wrong number of arguments gets. The
+    /// name is the function the call was for; `Self::NAME` is the one a slot
+    /// wants. `_PyArg_CheckPositional`
+    pub fn new_arity_type_error(
+        &self,
+        func_name: &str,
+        arity: RangeInclusive<usize>,
+        num_given: usize,
+    ) -> PyBaseExceptionRef {
+        let too_few = num_given < *arity.start();
+        self.new_type_error(arity_message(Some(func_name), &arity, too_few, num_given))
+    }
+
+    /// The error a call that passed a keyword the function doesn't take gets.
+    /// The name is left off where the parser has none of its own, the way
+    /// `_PyArg_Parser.fname` is NULL. `_PyArg_UnpackKeywords`
+    pub fn new_unexpected_keyword_type_error(
+        &self,
+        func_name: Option<&str>,
+        keyword: &str,
+    ) -> PyBaseExceptionRef {
+        self.new_type_error(unexpected_keyword_message(func_name, keyword))
+    }
+
+    pub fn new_unsupported_unary_error(&self, a: &PyObject, op: &str) -> PyBaseExceptionRef {
+        self.new_type_error(format!(
+            "bad operand type for {}: '{}'",
+            op,
+            a.class().slot_name()
+        ))
+    }
+
+    pub fn new_unsupported_bin_op_error(
+        &self,
+        a: &PyObject,
+        b: &PyObject,
+        op: &str,
+    ) -> PyBaseExceptionRef {
+        self.new_type_error(format!(
+            "unsupported operand type(s) for {}: '{}' and '{}'",
+            op,
+            a.class().slot_name(),
+            b.class().slot_name()
+        ))
+    }
+
+    pub fn new_unsupported_ternary_op_error(
+        &self,
+        a: &PyObject,
+        b: &PyObject,
+        c: &PyObject,
+        op: &str,
+    ) -> PyBaseExceptionRef {
+        self.new_type_error(format!(
+            "unsupported operand type(s) for {}: '{}', '{}', '{}'",
+            op,
+            a.class().slot_name(),
+            b.class().slot_name(),
+            c.class().slot_name()
+        ))
+    }
+
+    /// Create a new OSError from the last OS error.
+    ///
+    /// On windows, windows-sys errors are expected to be handled by this function.
+    /// This is identical to `new_last_errno_error` on non-Windows platforms.
+    pub fn new_last_os_error(&self) -> PyBaseExceptionRef {
+        let err = std::io::Error::last_os_error();
+        err.to_pyexception(self)
+    }
+
+    /// Create a new OSError from the last POSIX errno.
+    ///
+    /// On windows, CRT errno are expected to be handled by this function.
+    /// This is identical to `new_last_os_error` on non-Windows platforms.
+    pub fn new_last_errno_error(&self) -> PyBaseExceptionRef {
+        let err = crate::host_env::os::errno_io_error();
+        err.to_pyexception(self)
+    }
+
+    pub fn new_errno_error(&self, errno: i32, msg: impl ToPyObject) -> PyRef<PyOSError> {
+        let exc_type = crate::exceptions::errno_to_exc_type(errno, self)
+            .unwrap_or(self.ctx.exceptions.os_error);
+
+        self.new_os_subtype_error(exc_type.to_owned(), Some(errno), msg)
+    }
+
+    pub fn new_unicode_decode_error(
+        &self,
+        encoding: PyStrRef,
+        object: PyBytesRef,
+        start: usize,
+        end: usize,
+        reason: PyStrRef,
+    ) -> PyBaseExceptionRef {
+        let start = self.ctx.new_int(start);
+        let end = self.ctx.new_int(end);
+        self.invoke_exception(
+            self.ctx.exceptions.unicode_decode_error,
+            vec![
+                encoding.into(),
+                object.into(),
+                start.into(),
+                end.into(),
+                reason.into(),
+            ],
+        )
+        .expect("UnicodeDecodeError constructor")
+    }
+
+    pub fn new_unicode_encode_error(
+        &self,
+        encoding: PyStrRef,
+        object: PyStrRef,
+        start: usize,
+        end: usize,
+        reason: PyStrRef,
+    ) -> PyBaseExceptionRef {
+        let start = self.ctx.new_int(start);
+        let end = self.ctx.new_int(end);
+        self.invoke_exception(
+            self.ctx.exceptions.unicode_encode_error,
+            vec![
+                encoding.into(),
+                object.into(),
+                start.into(),
+                end.into(),
+                reason.into(),
+            ],
+        )
+        .expect("UnicodeEncodeError constructor")
+    }
+
+    // TODO: don't take ownership should make the success path faster
+    pub fn new_key_error(&self, obj: PyObjectRef) -> PyBaseExceptionRef {
+        let key_error = self.ctx.exceptions.key_error.to_owned();
+        self.new_simple_exception(key_error, vec![obj])
+    }
+
+    #[cfg(any(feature = "parser", feature = "compiler"))]
+    pub fn new_syntax_error_maybe_incomplete(
+        &self,
+        error: &crate::compiler::CompileError,
+        source: Option<&str>,
+        allow_incomplete: bool,
+    ) -> PyBaseExceptionRef {
+        if matches!(
+            error,
+            crate::compiler::CompileError::Codegen(crate::compiler::codegen::error::CodegenError {
+                error: crate::compiler::codegen::error::CodegenErrorType::RecursionError,
+                ..
+            })
+        ) {
+            return self.new_recursion_error(error.to_string());
+        }
+
+        let incomplete_or_syntax = |allow| -> &'static Py<crate::builtins::PyType> {
+            if allow {
+                self.ctx.exceptions.incomplete_input_error
+            } else {
+                self.ctx.exceptions.syntax_error
+            }
+        };
+
+        let syntax_error_type = match &error {
+            #[cfg(feature = "parser")]
+            crate::compiler::CompileError::Parse(rustpython_compiler::ParseError {
+                error: ParseErrorType::Lexical(LexicalErrorType::TabError),
+                ..
+            }) => self.ctx.exceptions.tab_error,
+            #[cfg(feature = "parser")]
+            crate::compiler::CompileError::Parse(rustpython_compiler::ParseError {
+                error:
+                    ParseErrorType::Lexical(
+                        LexicalErrorType::IndentationError | LexicalErrorType::TooDeepIndentation,
+                    )
+                    | ParseErrorType::UnexpectedIndentation,
+                ..
+            }) => self.ctx.exceptions.indentation_error,
+            #[cfg(feature = "parser")]
+            crate::compiler::CompileError::Parse(rustpython_compiler::ParseError {
+                error:
+                    ruff_python_parser::ParseErrorType::Lexical(
+                        ruff_python_parser::LexicalErrorType::Eof
+                        | ruff_python_parser::LexicalErrorType::UnclosedBracket {
+                            incomplete: true,
+                            ..
+                        },
+                    ),
+                ..
+            }) => incomplete_or_syntax(allow_incomplete),
+            // Unclosed bracket errors (converted from Eof by from_ruff_parse_error)
+            #[cfg(feature = "parser")]
+            crate::compiler::CompileError::Parse(rustpython_compiler::ParseError {
+                is_unclosed_bracket: true,
+                ..
+            }) => incomplete_or_syntax(allow_incomplete),
+            #[cfg(feature = "parser")]
+            crate::compiler::CompileError::Parse(rustpython_compiler::ParseError {
+                is_unclosed_string: true,
+                ..
+            }) => incomplete_or_syntax(allow_incomplete),
+            #[cfg(feature = "parser")]
+            crate::compiler::CompileError::Parse(rustpython_compiler::ParseError {
+                error:
+                    ruff_python_parser::ParseErrorType::Lexical(
+                        ruff_python_parser::LexicalErrorType::FStringError(
+                            ruff_python_parser::InterpolatedStringErrorType::UnterminatedTripleQuotedString { .. },
+                        )
+                        | ruff_python_parser::LexicalErrorType::TStringError(
+                            ruff_python_parser::InterpolatedStringErrorType::UnterminatedTripleQuotedString { .. },
+                        ),
+                    ),
+                ..
+            }) => incomplete_or_syntax(allow_incomplete),
+            #[cfg(feature = "parser")]
+            crate::compiler::CompileError::Parse(rustpython_compiler::ParseError {
+                error: ruff_python_parser::ParseErrorType::ExpectedIndentedBlock { .. },
+                raw_location,
+                ..
+            }) => {
+                // The block can still follow when the error is found at whitespace, that is, at
+                // the end of the input.
+                let at_end = source.is_some_and(|source| {
+                    source
+                        .get(raw_location.start().to_usize()..raw_location.end().to_usize())
+                        .is_some_and(|text| text.chars().all(|c| c.is_ascii_whitespace()))
+                });
+                if allow_incomplete && at_end {
+                    self.ctx.exceptions.incomplete_input_error
+                } else {
+                    self.ctx.exceptions.indentation_error
+                }
+            }
+            #[cfg(feature = "parser")]
+            crate::compiler::CompileError::Parse(rustpython_compiler::ParseError {
+                error: ruff_python_parser::ParseErrorType::OtherError(s),
+                raw_location,
+                ..
+            }) => {
+                if allow_incomplete
+                    && (s == "incomplete input"
+                        || (s == "unexpected EOF while parsing"
+                            && source.is_some_and(|source| {
+                                raw_location.end().to_usize() >= source.len()
+                                    && !source.ends_with('\n')
+                            })))
+                {
+                    self.ctx.exceptions.incomplete_input_error
+                } else {
+                    self.ctx.exceptions.syntax_error
+                }
+            }
+            _ => self.ctx.exceptions.syntax_error,
+        };
+        let syntax_error_type = if allow_incomplete && source.is_some_and(is_blank_python_source) {
+            self.ctx.exceptions.incomplete_input_error
+        } else {
+            syntax_error_type
+        }
+        .to_owned();
+
+        // TODO: replace to SourceCode
+        fn get_statement(source: &str, loc: Option<SourceLocation>) -> Option<String> {
+            let line = source
+                .split('\n')
+                .nth(loc?.line.to_zero_indexed())?
+                .trim_end_matches('\r')
+                .to_owned();
+            Some(line + "\n")
+        }
+
+        // Tokenizer/parser errors attach the current source line. Compiler
+        // errors load that line with ProgramText, which is None when the
+        // filename cannot be opened (compile of a string).
+        let mut statement = if matches!(error, crate::compiler::CompileError::Codegen(_)) {
+            self.program_text(error.source_path(), error.python_location().0)
+        } else {
+            source.and_then(|src| get_statement(src, error.location()))
+        };
+
+        let msg = if syntax_error_type.is(self.ctx.exceptions.incomplete_input_error) {
+            String::from("incomplete input")
+        } else {
+            error.to_string()
+        };
+
+        let unterminated_triple_quoted_string = msg.starts_with("unterminated triple-quoted");
+        let unexpected_eof_error = msg == "unexpected EOF while parsing";
+        if unterminated_triple_quoted_string
+            && let Some(statement) = statement.as_mut()
+            && statement.ends_with('\n')
+        {
+            // CPython omits the parser-added final newline from SyntaxError.text.
+            statement.pop();
+        }
+        let check_version_suite_error = msg.starts_with("Async functions are")
+            || msg.starts_with("Async for loops are")
+            || msg.starts_with("Async with statements are")
+            || msg.starts_with("Exception groups are")
+            || msg.starts_with("except expressions without parentheses are")
+            || msg.starts_with("Pattern matching is");
+        let line_end_binary_operator_error = msg.starts_with("The '@' operator is");
+        // Tokenizer errors other than unexpected EOF end where the tokenizer stopped, which is
+        // reported as end offset 0 or -1, or where they start.
+        let tokenizer_end_offset = cfg_select! {
+            feature = "parser" => {
+                match error {
+                    crate::compiler::CompileError::Parse(rustpython_compiler::ParseError {
+                        error: ParseErrorType::Lexical(
+                            LexicalErrorType::TabError
+                            | LexicalErrorType::TooDeepIndentation
+                            | LexicalErrorType::LineContinuationError
+                            | LexicalErrorType::UnclosedBracket { .. },
+                        ),
+                        ..
+                    }) => Some(0),
+                    crate::compiler::CompileError::Parse(rustpython_compiler::ParseError {
+                        error: ParseErrorType::Lexical(LexicalErrorType::IndentationError)
+                            | ParseErrorType::UnexpectedIndentation,
+                        ..
+                    }) => Some(-1),
+                    // The span runs from the last character of the key to the end of the line.
+                    crate::compiler::CompileError::Parse(rustpython_compiler::ParseError {
+                        error: ParseErrorType::ExpectedColonAfterDictionaryKey,
+                        ..
+                    }) => Some(0),
+                    // Other tokenizer errors end where they start, except those reported
+                    // over a range.
+                    crate::compiler::CompileError::Parse(rustpython_compiler::ParseError {
+                        error: ParseErrorType::Lexical(lexical),
+                        ..
+                    }) if lexical.is_tokenizer_error()
+                        && !matches!(
+                            lexical,
+                            LexicalErrorType::Eof
+                                | LexicalErrorType::LeadingZerosInDecimalInteger
+                                | LexicalErrorType::IncompatibleStringPrefixes { .. }
+                        ) =>
+                    {
+                        Some(error.python_location().1 as isize)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let unclosed_bracket_error = cfg_select! {
+            feature = "parser" => {
+                matches!(
+                    error,
+                    crate::compiler::CompileError::Parse(rustpython_compiler::ParseError {
+                        is_unclosed_bracket: true,
+                        ..
+                    })
+                )
+            }
+            _ => false,
+        };
+
+        let syntax_error: PyBaseExceptionRef = self
+            .new_payload_exception::<PySyntaxError>(
+                syntax_error_type,
+                vec![self.ctx.new_str(msg).into()].into(),
+            )
+            .expect("SyntaxError construction from internal args is infallible")
+            .upcast();
+
+        let (lineno_raw, offset_raw) = error.python_location();
+        let lineno = self.ctx.new_int(lineno_raw);
+        let offset = self.ctx.new_int(offset_raw);
+        set_attrs!(
+            syntax_error.as_object(), self, unwrap,
+            "lineno" => lineno,
+            "offset" => offset,
+        );
+
+        // Set end_lineno and end_offset if available
+        if let Some((end_lineno, end_offset)) = error.python_end_location() {
+            // EOF errors have no source span in CPython.
+            let no_end_offset = unexpected_eof_error
+                || (check_version_suite_error
+                    && statement
+                        .as_deref()
+                        .and_then(|line| line.chars().next())
+                        .is_some_and(|ch| ch.is_ascii_whitespace()));
+            let (end_lineno, end_offset) = if no_end_offset {
+                (end_lineno, -1)
+            } else if let Some(end_offset) = tokenizer_end_offset {
+                (end_lineno, end_offset)
+            } else if unclosed_bracket_error {
+                // The bracket that was never closed is marked where it opened,
+                // and the span stops there.
+                (end_lineno, 0)
+            } else if line_end_binary_operator_error && end_offset == offset_raw {
+                (end_lineno, (end_offset + 1) as isize)
+            } else {
+                (end_lineno, end_offset as isize)
+            };
+            let end_lineno = self.ctx.new_int(end_lineno);
+            let end_offset = self.ctx.new_int(end_offset);
+            set_attrs!(
+                syntax_error.as_object(), self, unwrap,
+                "end_lineno" => end_lineno,
+                "end_offset" => end_offset,
+            );
+        }
+
+        set_attrs!(
+            syntax_error.as_object(), self, unwrap,
+            "text" => statement.to_pyobject(self),
+            "filename" => self.ctx.new_str(error.source_path())
+        );
+
+        // Set _metadata for keyword typo suggestions in traceback module.
+        // Format: (start_line, col_offset, source_code)
+        // start_line=0 means "include all lines from beginning" which provides
+        // full context needed by _find_keyword_typos to compile-check suggestions.
+        if let Some(source) = source {
+            let metadata = self.ctx.new_tuple(vec![
+                self.ctx.new_int(0).into(),
+                self.ctx.new_int(0).into(),
+                self.ctx.new_str(source).into(),
+            ]);
+            set_attrs!(
+                syntax_error.as_object(), self, unwrap,
+                "_metadata" => metadata,
+            );
+        }
+
+        syntax_error
+    }
+
+    #[cfg(any(feature = "parser", feature = "compiler"))]
+    pub fn new_syntax_error(
+        &self,
+        error: &crate::compiler::CompileError,
+        source: Option<&str>,
+    ) -> PyBaseExceptionRef {
+        self.new_syntax_error_maybe_incomplete(error, source, false)
+    }
+
+    pub fn new_import_error(
+        &self,
+        msg: impl Into<Wtf8Buf>,
+        name: impl Into<PyStrRef>,
+    ) -> PyBaseExceptionRef {
+        let exc = self
+            .new_payload_exception::<PyImportError>(
+                self.ctx.exceptions.import_error.to_owned(),
+                vec![self.ctx.new_str(msg.into()).into()].into(),
+            )
+            .expect("ImportError construction from internal args is infallible");
+        set_attrs!(
+            exc.as_object(), self, unwrap,
+            "name" => name.into(),
+        );
+
+        exc.upcast()
+    }
+
+    pub fn new_system_exit(&self, args: FuncArgs) -> PyBaseExceptionRef {
+        self.new_payload_exception::<PySystemExit>(self.ctx.exceptions.system_exit.to_owned(), args)
+            .expect("SystemExit construction from internal args is infallible")
+            .upcast()
+    }
+
+    pub fn new_stop_iteration(&self, value: Option<PyObjectRef>) -> PyBaseExceptionRef {
+        // None (or omitted) is PyErr_SetNone: args stay empty so
+        // format_exception_only prints "StopIteration" not "StopIteration: None".
+        let args: FuncArgs = match value {
+            Some(v) if !self.is_none(&v) => vec![v].into(),
+            _ => Vec::<PyObjectRef>::new().into(),
+        };
+        self.new_payload_exception::<PyStopIteration>(
+            self.ctx.exceptions.stop_iteration.to_owned(),
+            args,
+        )
+        .expect("StopIteration construction from internal args is infallible")
+        .upcast()
+    }
+
+    fn new_downcast_error(
+        &self,
+        msg: &'static str,
+        error_type: &'static Py<PyType>,
+        class: &Py<PyType>,
+        obj: &PyObject, // the impl Borrow allows to pass PyObjectRef or &PyObject
+    ) -> PyBaseExceptionRef {
+        let actual_class = obj.class();
+        let actual_type = &*actual_class.name();
+        let expected_type = &*class.name();
+        let msg = format!("Expected {msg} '{expected_type}' but '{actual_type}' found.");
+        #[cfg(debug_assertions)]
+        let msg = if class.get_id() == actual_class.get_id() {
+            let mut msg = msg;
+            msg += " It might mean this type doesn't support subclassing very well. e.g. Did you forget to add `#[pyclass(with(Constructor))]`?";
+            msg
+        } else {
+            msg
+        };
+        self.new_exception_msg(error_type.to_owned(), msg.into())
+    }
+
+    pub(crate) fn new_downcast_runtime_error(
+        &self,
+        class: &Py<PyType>,
+        obj: &impl AsObject,
+    ) -> PyBaseExceptionRef {
+        self.new_downcast_error(
+            "payload",
+            self.ctx.exceptions.runtime_error,
+            class,
+            obj.as_object(),
+        )
+    }
+
+    pub(crate) fn new_downcast_type_error(
+        &self,
+        class: &Py<PyType>,
+        obj: &impl AsObject,
+    ) -> PyBaseExceptionRef {
+        self.new_downcast_error(
+            "type",
+            self.ctx.exceptions.type_error,
+            class,
+            obj.as_object(),
+        )
+    }
+
+    /// Create a `MemoryError` with no arguments, for reporting a failed allocation.
+    ///
+    /// Served from the MemoryError freelist when a husk is available, so the
+    /// raise itself does not allocate; falls back to a fresh allocation when
+    /// the freelist is empty (#8536).
+    pub fn no_memory_error(&self) -> PyBaseExceptionRef {
+        let exc: PyObjectRef = PyMemoryError::empty(self)
+            .into_ref_with_type_lazy_dict(self, self.ctx.exceptions.memory_error.to_owned())
+            .expect("MemoryError is a static type whose payload size matches PyMemoryError")
+            .into();
+        exc.downcast()
+            .expect("PyMemoryError payload downcasts to PyBaseException")
+    }
+
+    define_exception_fn!(fn new_lookup_error, lookup_error, LookupError);
+    define_exception_fn!(fn new_eof_error, eof_error, EOFError);
+    pub fn new_attribute_error(&self, msg: impl Into<Wtf8Buf>) -> PyBaseExceptionRef {
+        self.new_payload_exception::<PyAttributeError>(
+            self.ctx.exceptions.attribute_error.to_owned(),
+            vec![self.ctx.new_str(msg.into()).into()].into(),
+        )
+        .expect("AttributeError construction from internal args is infallible")
+        .upcast()
+    }
+
+    define_exception_fn!(fn new_type_error, type_error, TypeError);
+    define_exception_fn!(fn new_system_error, system_error, SystemError);
+
+    define_exception_fn!(fn new_value_error, value_error, ValueError);
+
+    define_exception_fn!(fn new_buffer_error, buffer_error, BufferError);
+    define_exception_fn!(fn new_index_error, index_error, IndexError);
+    define_exception_fn!(
+     fn new_not_implemented_error,
+        not_implemented_error,
+        NotImplementedError
+    );
+    define_exception_fn!(fn new_recursion_error, recursion_error, RecursionError);
+    define_exception_fn!(fn new_zero_division_error, zero_division_error, ZeroDivisionError);
+    define_exception_fn!(fn new_overflow_error, overflow_error, OverflowError);
+    define_exception_fn!(fn new_runtime_error, runtime_error, RuntimeError);
+    define_exception_fn!(fn new_python_finalization_error, python_finalization_error, PythonFinalizationError);
+    define_exception_fn!(fn new_memory_error, memory_error, MemoryError);
+    define_exception_fn!(fn new_assertion_error, assertion_error, AssertionError);
+    pub fn new_unbound_local_error(&self, msg: impl Into<Wtf8Buf>) -> PyBaseExceptionRef {
+        self.new_payload_exception::<PyNameError>(
+            self.ctx.exceptions.unbound_local_error.to_owned(),
+            vec![self.ctx.new_str(msg.into()).into()].into(),
+        )
+        .expect("UnboundLocalError construction from internal args is infallible")
+        .upcast()
+    }
+}
